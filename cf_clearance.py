@@ -79,8 +79,8 @@ class CloudflareSolver:
     def __init__(
         self,
         *,
-        user_agent: Optional[str],
-        timeout: float,
+        user_agent: Optional[str] = None,
+        timeout: float = 60.0,
         http2: bool = True,
         http3: bool = True,
         headless: bool = True,
@@ -89,6 +89,7 @@ class CloudflareSolver:
         """Khởi tạo Cloudflare solver."""
         config = zendriver.Config(headless=headless)
 
+        # Chỉ thêm user-agent nếu được cung cấp
         if user_agent is not None:
             config.add_argument(f"--user-agent={user_agent}")
 
@@ -98,9 +99,10 @@ class CloudflareSolver:
         if not http3:
             config.add_argument("--disable-quic")
 
-        # Thiết lập proxy
-        auth_proxy = SeleniumAuthenticatedProxy(proxy)
-        auth_proxy.enrich_chrome_options(config)
+        # Chỉ thêm proxy nếu được cung cấp
+        if proxy is not None:
+            auth_proxy = SeleniumAuthenticatedProxy(proxy)
+            auth_proxy.enrich_chrome_options(config)
 
         self.driver = zendriver.Browser(config)
         self._timeout = timeout
@@ -287,6 +289,8 @@ async def solve_cloudflare_task(task_id: str, url: str, user_agent: Optional[str
     if not user_agent:
         user_agent = get_chrome_user_agent()
         logger.info(f"Sử dụng user agent ngẫu nhiên: {user_agent}")
+    else:
+        logger.info(f"Sử dụng user agent được chỉ định: {user_agent}")
     
     try:
         task_results[task_id] = {"status": "processing", "timestamp": time.time()}
@@ -294,13 +298,19 @@ async def solve_cloudflare_task(task_id: str, url: str, user_agent: Optional[str
         if proxy:
             logger.info(f"Sử dụng proxy: {proxy}")
         
-        # Tạo solver
-        solver = CloudflareSolver(
-            user_agent=user_agent,
-            timeout=timeout,
-            headless=True,
-            proxy=proxy
-        )
+        # Tạo solver, chỉ truyền proxy và user_agent nếu chúng được cung cấp
+        solver_kwargs = {
+            "timeout": timeout,
+            "headless": True,
+        }
+        
+        if user_agent:
+            solver_kwargs["user_agent"] = user_agent
+            
+        if proxy:
+            solver_kwargs["proxy"] = proxy
+            
+        solver = CloudflareSolver(**solver_kwargs)
         
         active_solvers[task_id] = solver
         
@@ -464,7 +474,7 @@ async def solve():
             "error": "URL parameter is required"
         }), 400
     
-    # Kiểm tra định dạng proxy
+    # Kiểm tra định dạng proxy nếu được cung cấp
     if proxy and not (
         proxy.startswith('http://') or 
         proxy.startswith('https://') or 
@@ -487,18 +497,27 @@ async def solve():
             "error": f"Server đang xử lý tối đa số lượng task ({max_concurrent_tasks}). Vui lòng thử lại sau."
         }), 429
     
-
     # Tạo task ID
     task_id = str(uuid.uuid4())
     
-    # Bắt đầu task
-    asyncio.create_task(solve_cloudflare_task(
-        task_id=task_id,
-        url=url,
-        user_agent=user_agent,
-        proxy=proxy,
-        timeout=timeout
-    ))
+    # Bắt đầu task, chỉ truyền proxy và user_agent khi chúng được cung cấp
+    task_params = {
+        "task_id": task_id,
+        "url": url,
+        "timeout": timeout,
+    }
+    
+    if user_agent:
+        task_params["user_agent"] = user_agent
+    else:
+        task_params["user_agent"] = None  # Để đảm bảo sử dụng user agent ngẫu nhiên
+        
+    if proxy:
+        task_params["proxy"] = proxy
+    else:
+        task_params["proxy"] = None  # Rõ ràng là không sử dụng proxy
+    
+    asyncio.create_task(solve_cloudflare_task(**task_params))
     
     logger.info(f"Đã tạo task {task_id} cho URL: {url}")
     
